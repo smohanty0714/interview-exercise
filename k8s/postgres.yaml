@@ -1,0 +1,157 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-superuser
+type: Opaque
+data:
+  username: cG9zdGdyZXM=  # "postgres" base64 encoded
+  password: ZGVtbw==      # "demo" base64 encoded
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      containers:
+        - name: postgres
+          # https://hub.docker.com/r/debezium/postgres 
+          # https://quay.io/repository/debezium/postgres
+          # https://hub.docker.com/_/postgres
+          image: quay.io/debezium/postgres:16-alpine
+          env:
+            # https://hub.docker.com/_/postgres#environment-variables
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+            - name: POSTGRES_DB  # Default database to create when container is started
+              value: beacon
+            # Overwrite use of service name here otherwise readinessProbe will never pass
+            - name: PGHOST
+              value: localhost
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "pg_isready --timeout=30"]
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/schema.sql
+              subPath: schema.sql
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+data:
+  # Schema changes require a restart of Skaffold
+  schema.sql: |
+    CREATE SCHEMA datastore;
+    ALTER ROLE postgres SET search_path TO datastore,public;
+
+    CREATE DOMAIN public.jsonb_object AS jsonb
+        CONSTRAINT jsonb_object_value_only_object CHECK (value IS NULL OR jsonb_typeof(value) = 'object');
+
+    CREATE DOMAIN datastore.time_span AS int8range -- integers represent nanoseconds
+        CONSTRAINT time_span_check_nonempty CHECK (NOT isempty(value))
+        CONSTRAINT time_span_check_nonnegative CHECK (lower(value) >= 0)
+        CONSTRAINT time_span_check_lower_finite CHECK (NOT lower_inf(value))
+        CONSTRAINT time_span_check_upper_finite CHECK (NOT upper_inf(value));
+
+    CREATE DOMAIN datastore.signal_label AS text
+        CONSTRAINT signal_label_check_content CHECK (value ~ '^[a-z0-9_]{1,99}$');
+
+    CREATE TYPE datastore.sample_type AS enum ('uint8', 'uint16', 'uint32', 'uint64', 'int8', 'int16', 'int32', 'int64', 'float32', 'float64');
+
+    CREATE TABLE datastore.signal (
+        id uuid NOT NULL,
+        display_name text,
+        inserted_at timestamp with time zone DEFAULT transaction_timestamp() NOT NULL,
+        data bytea NOT NULL,
+        recording uuid NOT NULL,
+        span datastore.time_span NOT NULL,
+        sensor_label datastore.signal_label NOT NULL,
+        sensor_type datastore.signal_label NOT NULL,
+        channels text[] NOT NULL,
+        sample_unit datastore.signal_label NOT NULL,
+        sample_resolution_in_unit double precision NOT NULL,
+        sample_offset_in_unit double precision NOT NULL,
+        sample_type datastore.sample_type NOT NULL,
+        sample_rate double precision NOT NULL,
+        CONSTRAINT signal_sample_rate_check_positive CHECK ((sample_rate > (0)::double precision)),
+        CONSTRAINT signal_recording_sensor_type_channels_unique UNIQUE (recording, sensor_type, channels)
+    );
+
+    SELECT
+        gen_random_uuid() AS recording1
+    \gset
+
+    INSERT INTO datastore.signal (
+        id, data, recording, span, sensor_label, sensor_type, channels, sample_unit,
+        sample_resolution_in_unit, sample_offset_in_unit, sample_type, sample_rate
+    ) VALUES (
+        gen_random_uuid(),
+        'x'::bytea,
+        :'recording1'::uuid,
+        '[0,60_000_000_000)'::datastore.time_span,
+        'eeg'::datastore.signal_label,
+        'eeg'::datastore.signal_label,
+        array['f7-o1', 'f8-o2', 'f8-f7', 'f8-o1', 'f7-o2'],
+        'microvolt'::datastore.signal_label,
+        1,
+        0,
+        'float32'::datastore.sample_type,
+        250
+    ), (
+        gen_random_uuid(),
+        'b'::bytea,
+        :'recording1'::uuid,
+        '[0,60_000_000_000)'::datastore.time_span,
+        'accelerometer'::datastore.signal_label,
+        'accelerometer'::datastore.signal_label,
+        array['x', 'y', 'z'],
+        'gforce'::datastore.signal_label,
+        1,
+        0,
+        'float32'::datastore.sample_type,
+        50
+    );

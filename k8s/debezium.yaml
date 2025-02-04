@@ -1,0 +1,76 @@
+# Based upon: https://debezium.io/documentation/reference/stable/operations/kubernetes.html
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: connector-configuration-role
+  # namespace: debezium
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["postgres-superuser"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: connector-configuration-role-binding
+  # namespace: debezium
+subjects:
+  # The service account will be created by Strimzi once we deploy Kafka Connect.
+  # The serviceaccount name will be of the form `${KafkaConnectName}`-connect`.
+  - kind: ServiceAccount
+    name: debezium-connect-cluster-connect
+    # namespace: debezium
+roleRef:
+  kind: Role
+  name: connector-configuration-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# https://strimzi.io/docs/operators/latest/configuring.html#type-KafkaConnect-reference
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnect
+metadata:
+  name: debezium-connect-cluster
+  annotations:
+    strimzi.io/use-connector-resources: "true"
+spec:
+  version: 3.7.1
+  image: debezium-connect-postgres
+  replicas: 1
+  bootstrapServers: debezium-cluster-kafka-bootstrap:9092
+  config:
+    config.providers: secrets
+    config.providers.secrets.class: io.strimzi.kafka.KubernetesSecretConfigProvider
+    group.id: connect-cluster
+    offset.storage.topic: connect-cluster-offsets
+    config.storage.topic: connect-cluster-configs
+    status.storage.topic: connect-cluster-status
+    # -1 means it will use the default replication factor configured in the broker
+    config.storage.replication.factor: -1
+    offset.storage.replication.factor: -1
+    status.storage.replication.factor: -1
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: debezium-connector-postgres
+  labels:
+    strimzi.io/cluster: debezium-connect-cluster
+spec:
+  # https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-example-configuration
+  class: io.debezium.connector.postgresql.PostgresConnector
+  tasksMax: 1
+  config:
+    tasks.max: 1
+    database.hostname: postgres
+    database.port: 5432
+    database.user: ${secrets:default/postgres-superuser:username}
+    database.password: ${secrets:default/postgres-superuser:password}
+    database.dbname: beacon
+    # database.server.id: 184054
+    topic.prefix: postgres
+    table.include.list: datastore.signal
+    # database.include.list: inventory
+    # schema.history.internal.kafka.bootstrap.servers: debezium-cluster-kafka-bootstrap:9092
+    # schema.history.internal.kafka.topic: schema-changes.inventory

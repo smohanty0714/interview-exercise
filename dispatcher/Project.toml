@@ -1,0 +1,14 @@
+[deps]
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+LibPQ = "194296ae-ab2e-5f79-8cd4-7183a0a5a0d1"
+RDKafka = "43e2f499-f4c7-585f-8317-cbc2d9c3bf8f"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
+
+[compat]
+JSON3 = "1"
+LibPQ = "1"
+RDKafka = "0.2"
+Tables = "1"
+TimeZones = "1"
+julia = "1.10"
